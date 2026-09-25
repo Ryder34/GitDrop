@@ -1,0 +1,216 @@
+:root {
+  --bg-canvas: #0d1117;
+  --bg-default: #161b22;
+  --bg-subtle: #21262d;
+  --border-default: #30363d;
+  --border-muted: #21262d;
+  --fg-default: #e6edf3;
+  --fg-muted: #7d8590;
+  --accent-fg: #58a6ff;
+  --accent-emphasis: #1f6feb;
+  --success-fg: #3fb950;
+  --danger-fg: #f85149;
+  --attention-fg: #d29922;
+  --btn-bg: #21262d;
+  --btn-border: #30363d;
+  --btn-hover-bg: #30363d;
+  --radius: 6px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg-canvas);
+  color: var(--fg-default);
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-size: 14px;
+}
+
+#root {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 24px 16px;
+}
+
+h1 {
+  font-size: 20px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border-default);
+  padding-bottom: 12px;
+  margin-bottom: 16px;
+}
+
+p {
+  color: var(--fg-muted);
+  line-height: 1.5;
+}
+
+/* Buttons */
+button {
+  font: inherit;
+  color: var(--fg-default);
+  background: var(--btn-bg);
+  border: 1px solid var(--btn-border);
+  border-radius: var(--radius);
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  background: var(--btn-hover-bg);
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+button.primary {
+  background: var(--accent-emphasis);
+  border-color: rgba(240, 246, 252, 0.1);
+}
+
+button.primary:hover:not(:disabled) {
+  background: #1a5fc4;
+}
+
+button.danger-text {
+  color: var(--danger-fg);
+}
+
+/* Inputs and selects */
+input[type='text'],
+input[type='password'],
+select {
+  font: inherit;
+  color: var(--fg-default);
+  background: var(--bg-canvas);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius);
+  padding: 5px 10px;
+}
+
+input[type='text']:focus,
+input[type='password']:focus,
+select:focus {
+  outline: none;
+  border-color: var(--accent-fg);
+  box-shadow: 0 0 0 3px rgba(31, 111, 235, 0.3);
+}
+
+label {
+  color: var(--fg-default);
+}
+
+/* Panels */
+.panel {
+  background: var(--bg-default);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-top: 12px;
+}
+
+.panel-warning {
+  border-color: var(--attention-fg);
+}
+
+/* Lists */
+.file-list {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  border: 1px solid var(--border-muted);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.file-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border-muted);
+}
+
+.file-list li:last-child {
+  border-bottom: none;
+}
+
+.file-list li:hover {
+  background: var(--bg-subtle);
+}
+
+.file-row-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.file-size {
+  color: var(--fg-muted);
+  font-size: 12px;
+}
+
+/* Tabs */
+.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border-default);
+  margin: 16px 0;
+}
+
+.tabs button {
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  padding: 8px 4px;
+}
+
+.tabs button.active {
+  border-bottom-color: var(--accent-emphasis);
+  color: var(--fg-default);
+  font-weight: 600;
+}
+
+.tabs button:disabled {
+  opacity: 1;
+}
+
+/* Status text */
+.status-success {
+  color: var(--success-fg);
+}
+
+.status-error {
+  color: var(--danger-fg);
+}
+
+.status-warning {
+  color: var(--attention-fg);
+}
+
+.status-success a,
+.status-error a {
+  color: inherit;
+  text-decoration: underline;
+}
+
+a {
+  color: var(--accent-fg);
+}
+
+/* Breadcrumb-style path row */
+.path-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  color: var(--fg-default);
+  margin-bottom: 8px;
+}
