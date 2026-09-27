@@ -7,6 +7,7 @@ import uploadRoute from './routes/upload.js';
 import planRoute from './routes/plan.js';
 import releaseRoute from './routes/release.js';
 import browseRoute from './routes/browse.js';
+import progressRoute from './routes/progress.js';
 
 const app = express();
 app.use(express.json());
@@ -23,6 +24,7 @@ app.use('/api/upload',uploadRoute);
 app.use('/api/plan',planRoute);
 app.use('/api/release',releaseRoute);
 app.use('/api/browse',browseRoute);
+app.use('/api/progress', progressRoute);
 
 app.listen(3001, '127.0.0.1', () => {
   console.log('Server running on http://127.0.0.1:3001')

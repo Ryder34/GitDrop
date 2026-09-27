@@ -106,4 +106,52 @@ router.get('/:owner/:repo/download', async (req, res) => {
   }
 })
 
+// DELETE /api/browse/:owner/:repo?path=&branch=
+router.delete('/:owner/:repo', async (req, res) => {
+  const config = readConfig()
+  if (!config.token) {
+    return res.status(401).json({ error: 'Not connected' })
+  }
+
+  const { owner, repo } = req.params
+  const { path: filePath, branch } = req.query
+
+  if (!filePath) {
+    return res.status(400).json({ error: 'path is required' })
+  }
+
+  const octokit = new Octokit({ auth: config.token })
+
+  try {
+    // Need the file's current sha before deleting — GitHub requires it
+    const { data } = await octokit.repos.getContent({
+      owner,
+      repo,
+      path: filePath,
+      ref: branch,
+    })
+
+    if (Array.isArray(data) || data.type !== 'file') {
+      return res.status(400).json({ error: 'Path is not a file' })
+    }
+
+    await octokit.repos.deleteFile({
+      owner,
+      repo,
+      path: filePath,
+      message: `Delete ${data.name} via GitDrop`,
+      sha: data.sha,
+      branch,
+    })
+
+    res.json({ success: true })
+  } catch (err) {
+    console.error(err)
+    if (err.status === 404) {
+      return res.status(404).json({ error: 'File not found' })
+    }
+    res.status(500).json({ error: err.message || 'Delete failed' })
+  }
+})
+
 export default router

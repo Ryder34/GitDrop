@@ -93,4 +93,44 @@ router.get('/:owner/:repo/branches', async (req, res) => {
   }
 })
 
+router.post('/:owner/:repo/branches', async (req, res) => {
+  const config = readConfig()
+  if (!config.token) {
+    return res.status(401).json({ error: 'Not connected' })
+  }
+
+  const { owner, repo } = req.params
+  const { name, fromBranch } = req.body
+
+  if (!name) {
+    return res.status(400).json({ error: 'Branch name is required' })
+  }
+
+  const octokit = new Octokit({ auth: config.token })
+
+  try {
+    // Get the SHA of the branch we're branching from
+    const { data: refData } = await octokit.git.getRef({
+      owner,
+      repo,
+      ref: `heads/${fromBranch}`,
+    })
+
+    await octokit.git.createRef({
+      owner,
+      repo,
+      ref: `refs/heads/${name}`,
+      sha: refData.object.sha,
+    })
+
+    res.json({ success: true, name })
+  } catch (err) {
+    console.error(err)
+    if (err.status === 422) {
+      return res.status(422).json({ error: 'A branch with that name already exists' })
+    }
+    res.status(500).json({ error: err.message || 'Failed to create branch' })
+  }
+})
+
 export default router
