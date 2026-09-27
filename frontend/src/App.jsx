@@ -36,6 +36,7 @@ function App() {
   const [branches, setBranches] = useState([])
 
   const [releaseId, setReleaseId] = useState(null)
+  const [releaseAssets, setReleaseAssets] = useState([])
 
   const [activeTab, setActiveTab] = useState('upload') // 'upload' | 'browse'
   const [remotePath, setRemotePath] = useState('')
@@ -46,6 +47,23 @@ function App() {
   const [pickingFolder, setPickingFolder] = useState(false)
   const [pickerPath, setPickerPath] = useState('')
   const [pickerItems, setPickerItems] = useState([])
+
+  const [releaseUploadProgress, setReleaseUploadProgress] = useState(null) // { fileName, percent, sent, total }
+  const [uploadedCount, setUploadedCount] = useState(0)
+  const [totalToUpload, setTotalToUpload] = useState(0)
+
+  const [browseSearchTerm, setBrowseSearchTerm] = useState('') // local file browser (Upload tab)
+  const [remoteSearchTerm, setRemoteSearchTerm] = useState('') // remote repo browser (Browse tab)
+
+  const [selectedRemoteFiles, setSelectedRemoteFiles] = useState([]) // { path, name, type: 'repo' | 'release', asset? }
+
+  const [confirmDialog, setConfirmDialog] = useState(null) // { message, onConfirm } | null
+
+  const [toast, setToast] = useState(null) // { message, type: 'success' | 'error' }
+
+  const [showNewBranchForm, setShowNewBranchForm] = useState(false)
+  const [newBranchName, setNewBranchName] = useState('')
+  const [creatingBranch, setCreatingBranch] = useState(false)
 
   useEffect(() => {
     fetch('/api/auth/status')
@@ -98,6 +116,7 @@ function App() {
   useEffect(() => {
     if (activeTab === 'browse' && selectedRepo && branch) {
       loadRemotePath('')
+      loadReleaseAssets()
     }
   }, [activeTab, selectedRepo, branch])
 
@@ -108,6 +127,11 @@ function App() {
       .then((data) => setDownloadTarget(data.downloads))
   }, [])
 
+  function showToast(message, type = 'success') {
+    setToast({ message, type })
+    setTimeout(() => setToast(null), 3000)
+  }
+  
   async function handleConnect(e) {
     e.preventDefault()
     setError('')
@@ -120,6 +144,7 @@ function App() {
     if (res.ok) {
       setConnected(true)
       setUsername(data.username)
+      showToast(`Connected as ${data.username}`)
     } else {
       setError(data.error)
     }
@@ -205,7 +230,7 @@ function App() {
       setConflicts(combined)
     } else {
       const filesToUpload = combined.filter((r) => r.status === 'new')
-      runUpload(filesToUpload)
+      runUpload(filesToUpload,newReleaseId)
     }
   }
 
@@ -221,6 +246,9 @@ function App() {
     const [owner, repo] = selectedRepo.split('/')
     const commitFiles = filesToUpload.filter((f) => f.method === 'commit')
     const releaseFiles = filesToUpload.filter((f) => f.method === 'release')
+
+    setUploadedCount(0)
+    setTotalToUpload(filesToUpload.length)
 
     const results = { commitUrl: null, releaseUrl: null, errors: [] }
 
@@ -239,6 +267,7 @@ function App() {
       const data = await res.json()
       if (res.ok) {
         results.commitUrl = data.commitUrl
+        setUploadedCount((prev) => prev + commitFiles.length)
       } else {
         results.errors.push(`Commit failed: ${data.error}`)
       }
@@ -248,6 +277,23 @@ function App() {
       for (let i = 0; i < releaseFiles.length; i++) {
         const file = releaseFiles[i]
         setUploadProgress(`Uploading ${file.name} (${i + 1}/${releaseFiles.length})...`)
+        setReleaseUploadProgress({ fileName: file.name, percent: 0, sent: 0, total: file.size })
+
+        const jobId = generateJobId()
+
+        // Connect to the progress stream before starting the upload, so we don't miss early events
+        const eventSource = new EventSource(`/api/progress/${jobId}`)
+        eventSource.onmessage = (event) => {
+          const data = JSON.parse(event.data)
+          if (data.done) {
+            eventSource.close()
+            return
+          }
+          setReleaseUploadProgress(data)
+        }
+        eventSource.onerror = () => {
+          eventSource.close()
+        }
 
         const res = await fetch('/api/release/upload', {
           method: 'POST',
@@ -256,26 +302,37 @@ function App() {
             owner,
             repo,
             releaseId: releaseIdOverride ?? releaseId,
-            files: [{ path: file.path, name: file.name }],
+            files: [{ path: file.path, name: file.name, forceRename: file.forceRename }],
+            jobId,
           }),
         })
         const data = await res.json()
+
+        eventSource.close() // make sure it's closed even if 'done' event was missed
+
         if (res.ok) {
           results.releaseUrl = data.releaseUrl
+          setUploadedCount((prev) => prev + 1)
         } else {
           results.errors.push(`${file.name} failed: ${data.error}`)
         }
       }
     }
+    setReleaseUploadProgress(null)
 
     setUploading(false)
     setUploadProgress('')
     setConflicts(null)
 
+    setUploadedCount(0)
+    setTotalToUpload(0)
+
     if (results.errors.length > 0) {
       setUploadResult({ success: false, error: results.errors.join('; ') })
+      showToast('Some files failed to upload', 'error')
     } else {
       setUploadResult({ success: true, commitUrl: results.commitUrl, releaseUrl: results.releaseUrl })
+      showToast(`Uploaded ${filesToUpload.length} file(s) successfully`)
     }
     setSelectedFiles([])
   }
@@ -295,21 +352,26 @@ function App() {
       if (decision === 'overwrite') {
         filesToUpload.push(result)
       } else if (decision === 'keep-both') {
-        const dotIndex = result.name.lastIndexOf('.')
-        const renamed =
-          dotIndex > 0
-            ? `${result.name.slice(0, dotIndex)} (1)${result.name.slice(dotIndex)}`
-            : `${result.name} (1)`
-        // Rebuild targetPath with the renamed file, keeping the same destination folder
-        const folder = result.targetPath.includes('/')
-          ? result.targetPath.slice(0, result.targetPath.lastIndexOf('/'))
-          : ''
-        const renamedTargetPath = folder ? `${folder}/${renamed}` : renamed
-        filesToUpload.push({ ...result, name: renamed, targetPath: renamedTargetPath })
+        if (result.method === 'release') {
+          // Let the backend find the next free name (e.g. (1), (2)...) instead of guessing
+          filesToUpload.push({ ...result, forceRename: true })
+        } else {
+          // Commit path: still need a concrete renamed path upfront for the tree
+          const dotIndex = result.name.lastIndexOf('.')
+          const renamed =
+            dotIndex > 0
+              ? `${result.name.slice(0, dotIndex)} (1)${result.name.slice(dotIndex)}`
+              : `${result.name} (1)`
+          const folder = result.targetPath.includes('/')
+            ? result.targetPath.slice(0, result.targetPath.lastIndexOf('/'))
+            : ''
+          const renamedTargetPath = folder ? `${folder}/${renamed}` : renamed
+          filesToUpload.push({ ...result, name: renamed, targetPath: renamedTargetPath })
+        }
       }
     }
 
-    runUpload(filesToUpload,newreleaseId)
+    runUpload(filesToUpload)
   }
 
   function handleRepoChange(fullName) {
@@ -341,8 +403,33 @@ function App() {
       setShowNewRepoForm(false)
       setNewRepoName('')
       setNewRepoDescription('')
+      showToast(`Repository "${data.name}" created`)
     } else {
       setNewRepoError(data.error)
+    }
+  }
+
+  async function handleCreateBranch(e) {
+    e.preventDefault()
+    setCreatingBranch(true)
+
+    const [owner, repo] = selectedRepo.split('/')
+    const res = await fetch(`/api/repos/${owner}/${repo}/branches`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newBranchName, fromBranch: branch }),
+    })
+    const data = await res.json()
+    setCreatingBranch(false)
+
+    if (res.ok) {
+      setBranches((prev) => [...prev, data.name])
+      setBranch(data.name)
+      setShowNewBranchForm(false)
+      setNewBranchName('')
+      showToast(`Branch "${data.name}" created`)
+    } else {
+      showToast(`Failed to create branch: ${data.error}`, 'error')
     }
   }
 
@@ -366,6 +453,7 @@ function App() {
       .then((data) => {
         setBrowsePath(data.path)
         setBrowseItems(data.items)
+        setBrowseSearchTerm('')
       })
   }
 
@@ -376,13 +464,16 @@ function App() {
   }
 
   function toggleFileSelect(item) {
+    const exists = selectedFiles.find((f) => f.path === item.path)
     setSelectedFiles((prev) => {
-      const exists = prev.find((f) => f.path === item.path)
       if (exists) {
         return prev.filter((f) => f.path !== item.path)
       }
       return [...prev, item]
     })
+    if (exists) {
+      showToast(`Removed "${item.name}" from queue`)
+    }
   }
 
   function loadRemotePath(path) {
@@ -395,6 +486,7 @@ function App() {
       .then((data) => {
         setRemotePath(path)
         setRemoteEntries(data.entries)
+        setRemoteSearchTerm('')
       })
   }
 
@@ -418,8 +510,10 @@ function App() {
 
     if (res.ok) {
       setDownloadStatus(`Saved to ${data.savedTo}`)
+      showToast(`Downloaded "${entry.name}"`)
     } else {
       setDownloadStatus(`Failed: ${data.error}`)
+      showToast(`Download failed: ${data.error}`, 'error')
     }
   }
 
@@ -428,6 +522,18 @@ function App() {
     fetch('/api/fs/defaults')
       .then((res) => res.json())
       .then((data) => loadPickerPath(data.downloads))
+  }
+
+  function generateJobId() {
+    return `job-${Date.now()}-${Math.random().toString(36).slice(2)}`
+  }
+
+  function loadReleaseAssets() {
+    if (!selectedRepo) return
+    const [owner, repo] = selectedRepo.split('/')
+    fetch(`/api/release/${owner}/${repo}`)
+      .then((res) => res.json())
+      .then((data) => setReleaseAssets(data.assets || []))
   }
 
   async function selectFolder(item) {
@@ -440,6 +546,8 @@ function App() {
       return
     }
 
+    // console.log('DEBUG walk result:', data.fileCount, data.files.length, data.rootName)
+
     // Add every file in the folder to the queue, tagged with which folder it came from
     // so we know to preserve the nested structure when uploading
     const folderFiles = data.files.map((f) => ({
@@ -450,11 +558,20 @@ function App() {
       folderRoot: data.rootName,
     }))
 
+    let addedCount = 0
     setSelectedFiles((prev) => {
       const existingPaths = new Set(prev.map((f) => f.path))
       const newOnes = folderFiles.filter((f) => !existingPaths.has(f.path))
+      addedCount = newOnes.length
       return [...prev, ...newOnes]
     })
+    
+    // showToast(`Added ${addedCount} file(s) from "${data.rootName}"`)
+    if (addedCount === 0) {
+      showToast(`All files from "${data.rootName}" are unchanged`)
+    } else {
+      showToast(`Added ${addedCount} file(s) from "${data.rootName}"`)
+    }
   }
 
   function loadPickerPath(targetPath) {
@@ -478,6 +595,76 @@ function App() {
   function selectDownloadFolder() {
     setDownloadTarget(pickerPath)
     setPickingFolder(false)
+    showToast(`Downloads will save to ${pickerPath}`)
+  }
+
+  function askToDelete(message, onConfirm) {
+    setConfirmDialog({ message, onConfirm })
+  }
+
+  async function deleteRepoFile(entry) {
+    const [owner, repo] = selectedRepo.split('/')
+    const params = new URLSearchParams({ path: entry.path, branch })
+
+    const res = await fetch(`/api/browse/${owner}/${repo}?${params}`, { method: 'DELETE' })
+    const data = await res.json()
+
+    if (res.ok) {
+      loadRemotePath(remotePath) // refresh the current folder listing
+      showToast(`Deleted "${entry.name}"`)
+    } else {
+      showToast(`Failed to delete "${entry.name}": ${data.error}`, 'error')
+    }
+  }
+
+  async function deleteReleaseAsset(asset) {
+    const [owner, repo] = selectedRepo.split('/')
+
+    const res = await fetch(`/api/release/${owner}/${repo}/asset/${asset.id}`, { method: 'DELETE' })
+    const data = await res.json()
+
+    if (res.ok) {
+      loadReleaseAssets() // refresh the release list
+      showToast(`Deleted "${asset.name}"`)
+    } else {
+      showToast(`Failed to delete "${asset.name}": ${data.error}`, 'error')
+    }
+  }
+
+  function clearQueue() {
+    askToDelete(`Clear all ${selectedFiles.length} file(s) from the queue?`, () => {
+      setSelectedFiles([])
+      showToast('Queue cleared')
+    })
+  }
+
+  function toggleRemoteSelect(item) {
+    setSelectedRemoteFiles((prev) => {
+      const exists = prev.find((f) => f.path === item.path)
+      return exists ? prev.filter((f) => f.path !== item.path) : [...prev, item]
+    })
+  }
+
+  function selectAllVisible(items) {
+    setSelectedRemoteFiles(items)
+  }
+
+  async function deleteSelected() {
+    for (const item of selectedRemoteFiles) {
+      if (item.type === 'release') {
+        await deleteReleaseAsset(item.asset)
+      } else {
+        await deleteRepoFile(item)
+      }
+    }
+    setSelectedRemoteFiles([])
+  }
+
+  async function downloadSelected() {
+    for (const item of selectedRemoteFiles) {
+      if (item.type === 'repo') await handleDownload(item)
+    }
+    setSelectedRemoteFiles([])
   }
 
   if (!connected) {
@@ -583,7 +770,32 @@ function App() {
                   </option>
                 ))}
               </select>
-            </label>
+            </label>{' '}
+            <button onClick={() => setShowNewBranchForm(true)}>+ New branch</button>
+
+            {showNewBranchForm && (
+              <div className="panel" style={{ marginTop: '12px' }}>
+                <form onSubmit={handleCreateBranch}>
+                  <p style={{ marginTop: 0 }}>
+                    New branch from <strong style={{ color: 'var(--fg-default)' }}>{branch}</strong>:
+                  </p>
+                  <input
+                    type="text"
+                    placeholder="Branch name"
+                    value={newBranchName}
+                    onChange={(e) => setNewBranchName(e.target.value)}
+                    required
+                    style={{ width: '100%', marginBottom: '8px' }}
+                  />
+                  <button type="submit" className="primary" disabled={creatingBranch}>
+                    {creatingBranch ? 'Creating...' : 'Create branch'}
+                  </button>{' '}
+                  <button type="button" onClick={() => setShowNewBranchForm(false)}>
+                    Cancel
+                  </button>
+                </form>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -658,8 +870,17 @@ function App() {
                   <button onClick={browseUp}>↑ up</button>
                   <button onClick={() => setBrowsing(false)}>Close</button>
                 </div>
+                <input
+                  type="text"
+                  placeholder="Search files in this folder..."
+                  value={browseSearchTerm}
+                  onChange={(e) => setBrowseSearchTerm(e.target.value)}
+                  style={{ width: '100%', marginBottom: '8px' }}
+                />
                 <ul className="file-list">
-                  {browseItems.map((item) => (
+                  {browseItems
+                    .filter((item) => item.name.toLowerCase().includes(browseSearchTerm.toLowerCase()))
+                    .map((item) => (
                     <li key={item.path}>
                       {item.isDir ? (
                           <span className="file-row-left" style={{ width: '100%' }}>
@@ -690,7 +911,10 @@ function App() {
 
             {selectedFiles.length > 0 && (
               <div style={{ marginTop: '12px' }}>
-                <p>Queue ({selectedFiles.length} files):</p>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <p>Queue ({selectedFiles.length} files):</p>
+                  <button className="danger-text" onClick={clearQueue}>Clear queue</button>
+                </div>
                 <ul className="file-list">
                     {selectedFiles.map((f) => (
                       <li key={f.path}>
@@ -707,6 +931,33 @@ function App() {
                 <button className="primary" onClick={handleCheckAndUpload} disabled={checking || uploading}>
                   {checking ? 'Checking...' : uploading ? uploadProgress : `Upload ${selectedFiles.length} file(s)`}
                 </button>
+
+                {uploading && totalToUpload > 0 && (
+                  <p style={{ fontSize: '13px', color: 'var(--fg-muted)' }}>
+                    {uploadedCount} / {totalToUpload} files uploaded
+                  </p>
+                )}
+
+                {uploading && (
+                  <div style={{ marginTop: '8px' }}>
+                    <div className="spinner" /> {uploadProgress}
+                  </div>
+                )}
+
+                {releaseUploadProgress && (
+                  <div style={{ marginTop: '8px' }}>
+                    <div className="progress-bar-track">
+                      <div
+                        className="progress-bar-fill"
+                        style={{ width: `${releaseUploadProgress.percent}%` }}
+                      />
+                    </div>
+                    <p style={{ fontSize: '12px', marginTop: '4px' }}>
+                      {releaseUploadProgress.fileName}: {releaseUploadProgress.percent}%
+                      {' '}({(releaseUploadProgress.sent / 1024 / 1024).toFixed(1)} MB / {(releaseUploadProgress.total / 1024 / 1024).toFixed(1)} MB)
+                    </p>
+                  </div>
+                )}
 
                 {uploadResult && uploadResult.success && (
                   <p className="status-success">
@@ -812,8 +1063,55 @@ function App() {
             )}
           </div>
 
+          <input
+            type="text"
+            placeholder="Search this folder..."
+            value={remoteSearchTerm}
+            onChange={(e) => setRemoteSearchTerm(e.target.value)}
+            style={{ width: '100%', marginBottom: '8px' }}
+          />
+
+          {selectedRemoteFiles.length > 0 && (
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '8px', alignItems: 'center' }}>
+              <span style={{ fontSize: '13px', color: 'var(--fg-muted)' }}>
+                {selectedRemoteFiles.length} selected
+              </span>
+              <button onClick={downloadSelected}>Download selected</button>
+              <button
+                className="danger-text"
+                onClick={() =>
+                  askToDelete(
+                    `Delete ${selectedRemoteFiles.length} selected item(s)? This cannot be undone.`,
+                    deleteSelected
+                  )
+                }
+              >
+                Delete selected
+              </button>
+              <button onClick={() => setSelectedRemoteFiles([])}>Clear selection</button>
+            </div>
+          )}
+
+          <div style={{ marginBottom: '4px' }}>
+            <button
+              onClick={() => {
+                const repoItems = remoteEntries
+                  .filter((e) => e.type !== 'dir')
+                  .map((e) => ({ ...e, type: 'repo' }))
+                setSelectedRemoteFiles((prev) => {
+                  const releaseOnly = prev.filter((f) => f.type === 'release')
+                  return [...releaseOnly, ...repoItems]
+                })
+              }}
+            >
+              Select all files
+            </button>
+          </div>
+
           <ul className="file-list">
-            {remoteEntries.map((entry) => (
+            {remoteEntries
+            .filter((entry) => entry.name.toLowerCase().includes(remoteSearchTerm.toLowerCase()))
+            .map((entry) =>(
               <li key={entry.path}>
                 {entry.type === 'dir' ? (
                   <button
@@ -825,19 +1123,119 @@ function App() {
                 ) : (
                   <>
                     <span className="file-row-left">
+                      <input
+                        type="checkbox"
+                        checked={!!selectedRemoteFiles.find((f) => f.path === entry.path)}
+                        onChange={() => toggleRemoteSelect({ ...entry, type: 'repo' })}
+                      />
                       📄 {entry.name}
                       <span className="file-size">({(entry.size / 1024).toFixed(1)} KB)</span>
                     </span>
-                    <button onClick={() => handleDownload(entry)}>Download</button>
+                    <span style={{ display: 'flex', gap: '6px' }}>
+                      <button onClick={() => handleDownload(entry)}>Download</button>
+                      <button
+                        className="danger-text"
+                        onClick={() =>
+                          askToDelete(`Delete "${entry.name}" from this repository? This cannot be undone.`, () =>
+                            deleteRepoFile(entry)
+                          )
+                        }
+                      >
+                        Delete
+                      </button>
+                    </span>
                   </>
                 )}
               </li>
             ))}
           </ul>
 
+          {releaseAssets.length > 0 && (
+            <div style={{ marginTop: '16px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <p>Release files (videos & large files):</p>
+                <button
+                  onClick={() => {
+                    const releaseItems = releaseAssets.map((a) => ({
+                      path: a.name,
+                      name: a.name,
+                      type: 'release',
+                      asset: a,
+                    }))
+                    setSelectedRemoteFiles((prev) => {
+                      const repoOnly = prev.filter((f) => f.type === 'repo')
+                      return [...repoOnly, ...releaseItems]
+                    })
+                  }}
+                >
+                  Select all releases
+                </button>
+              </div>
+              <ul className="file-list">
+                {releaseAssets
+                .filter((asset) => asset.name.toLowerCase().includes(remoteSearchTerm.toLowerCase()))
+                .map((asset) => (
+                  <li key={asset.id}>
+                    <span className="file-row-left">
+                      <input
+                        type="checkbox"
+                        checked={!!selectedRemoteFiles.find((f) => f.path === asset.name)}
+                        onChange={() => toggleRemoteSelect({ path: asset.name, name: asset.name, type: 'release', asset })}
+                      />
+                      🎬 {asset.name}
+                      <span className="file-size">({(asset.size / 1024 / 1024).toFixed(1)} MB)</span>
+                    </span>
+                    <span style={{ display: 'flex', gap: '6px' }}>
+                      <a href={asset.url} target="_blank" rel="noreferrer">
+                        <button>Download</button>
+                      </a>
+                      <button
+                        className="danger-text"
+                        onClick={() =>
+                          askToDelete(`Delete "${asset.name}" from the release? This cannot be undone.`, () =>
+                            deleteReleaseAsset(asset)
+                          )
+                        }
+                      >
+                        Delete
+                      </button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {downloadStatus && <p className="status-success">{downloadStatus}</p>}
         </div>
       )}
+
+      {confirmDialog && (
+        <div className="modal-overlay">
+          <div className="modal-box">
+            <p>{confirmDialog.message}</p>
+            <div style={{ marginTop: '12px', display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+              <button onClick={() => setConfirmDialog(null)}>Cancel</button>
+              <button
+                className="danger-solid"
+                onClick={() => {
+                  confirmDialog.onConfirm()
+                  setConfirmDialog(null)
+                }}
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {toast && (
+        <div className={`toast ${toast.type === 'error' ? 'toast-error' : 'toast-success'}`}>
+          {toast.message}
+        </div>
+      )}
+
     </div>
   )
 }
