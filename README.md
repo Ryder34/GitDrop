@@ -62,7 +62,6 @@ gitdrop/
 ### Requirements
 
 - Node.js 20 or later
-- A GitHub account
 - A GitHub personal access token (classic), with the `repo` scope
 
 ### 1. Clone or download the project
@@ -111,3 +110,7 @@ The application will be available at `http://localhost:5173`.
 On first load, generate a personal access token from GitHub under **Settings → Developer settings → Personal access tokens → Tokens (classic)**, with the `repo` scope checked. Paste this token into the connect screen to begin using the application.
 
 The token is stored locally in a configuration file outside the project directory and is never sent anywhere other than directly to GitHub's API.
+
+## Windows setup
+
+This code base was written for linux based systems but still `No code changes` are required — paths are handled with Node's cross-platform path module throughout. Use PowerShell or Command Prompt in place of bash for the setup commands above.
